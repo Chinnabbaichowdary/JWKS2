@@ -1,8 +1,1 @@
-Generate JWT
-Endpoint: POST /auth
-Query Parameters:
-expired: Optional. Set to true to generate an expired JWT.
-Response: JSON object containing the JWT under both jwt and token keys.
-Retrieve JWKS
-Endpoint: GET /.well-known/jwks.json
-Response: JSON Web Key Set (JWKS) containing the public keys used to sign JWTs.
+This Flask application serves as both a JWT authentication server and a JWKS (JSON Web Key Set) provider. It generates RSA keys upon initialization, stores them in a SQLite database, and uses these keys to sign JWTs. The application supports generating both valid and expired JWTs based on client requests and provides a JWKS endpoint for clients to retrieve public keys for JWT validation.
