@@ -1,0 +1,87 @@
+#chinnabbaichowdary
+#11548971
+
+from flask import Flask, jsonify, request
+import sqlite3
+from datetime import datetime, timedelta, timezone
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+import base64
+
+# Initialize Flask app
+app = Flask(__name__)
+DATABASE = 'totally_not_my_privateKeys.db'
+ALGORITHM = 'RS256'
+
+# Initialize and ensure the database is set up
+def initialize_database():
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS keys (
+                            kid INTEGER PRIMARY KEY AUTOINCREMENT,
+                            key BLOB NOT NULL,
+                            exp INTEGER NOT NULL);''')
+        conn.commit()
+
+# Generate and store RSA keys if not already present
+def generate_rsa_keys():
+    with sqlite3.connect(DATABASE) as conn:
+        if conn.execute('SELECT COUNT(*) FROM keys').fetchone()[0] == 0:
+            print("Generating RSA keys and storing...")
+            for i in range(5):  # Include both valid and expired keys
+                key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+                key_pem = key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption())
+                exp = datetime.now(tz=timezone.utc) + timedelta(hours=1 if i % 2 == 0 else -1)
+                conn.execute('INSERT INTO keys (key, exp) VALUES (?, ?)', (key_pem, exp.timestamp()))
+            conn.commit()
+
+# Serve JWKS at the '.well-known/jwks.json' endpoint
+@app.route('/.well-known/jwks.json', methods=['GET'])
+def serve_jwks():
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM keys WHERE exp > ?", (datetime.now(tz=timezone.utc).timestamp(),))
+        keys = cursor.fetchall()
+    
+    jwks = {"keys": []}
+    for key in keys:
+        kid, key_pem, _ = key
+        public_key = serialization.load_pem_private_key(key_pem, password=None).public_key()
+        public_numbers = public_key.public_numbers()
+        jwk = {
+            "kid": str(kid),
+            "kty": "RSA",
+            "use": "sig",
+            "alg": "RS256",
+            "n": base64.urlsafe_b64encode(public_numbers.n.to_bytes(256, 'big')).decode('utf-8').rstrip('='),
+            "e": base64.urlsafe_b64encode(public_numbers.e.to_bytes(3, 'big')).decode('utf-8').rstrip('='),
+        }
+        jwks["keys"].append(jwk)
+    return jsonify(jwks)
+
+# Handle JWT generation at the '/auth' endpoint
+@app.route('/auth', methods=['POST'])
+def generate_jwt():
+    expired = request.args.get('expired', 'false').lower() == 'true'
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT kid, key, exp FROM keys WHERE exp > ? ORDER BY exp ASC LIMIT 1", (datetime.now(tz=timezone.utc).timestamp(),))
+        key_row = cursor.fetchone()
+    
+    if key_row:
+        kid, key_pem, exp = key_row
+        private_key = serialization.load_pem_private_key(key_pem, password=None)
+        exp_time = datetime.now(tz=timezone.utc) + timedelta(hours=1 if not expired else -1)
+        token = jwt.encode({"iss": "Flask Auth Service", "exp": exp_time}, private_key, algorithm=ALGORITHM, headers={"kid": str(kid)})
+        return jsonify({"jwt": token, "token": token})  # Include JWT under both 'jwt' and 'token' keys
+    else:
+        return jsonify({"error": "No suitable RSA key found."}), 404
+
+if __name__ == '__main__':
+    initialize_database()
+    generate_rsa_keys()
+    app.run(debug=True, host='0.0.0.0', port=8080)
+
